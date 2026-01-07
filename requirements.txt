@@ -11,3 +11,8 @@ python-dotenv>=1.0,<2
 
 tornado>=6.3,<7
 tqdm>=4.66,<5
+
+pandas_gbq
+
+pytz>=2024.0,<2027
+logging-formatter-anticrlf>=1.2,<2
