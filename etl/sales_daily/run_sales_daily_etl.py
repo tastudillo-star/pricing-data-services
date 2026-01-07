@@ -2,7 +2,7 @@ import os
 
 from dotenv import load_dotenv
 load_dotenv()  # carga .env en os.environ
-from sales_daily_etl import SalesDailyETL
+from etl.sales_daily.sales_daily_etl import SalesDailyETL
 
 
 def main():
@@ -32,6 +32,21 @@ if __name__ == "__main__":
 cd /srv/
 git clone https://github.com/tastudillo-star/pricing-data-services.git
 cd pricing-data-services
+
+cd /srv/pricing-data-services
+git pull
+
+cd /srv/pricing-data-services
+
+# 1) Crear venv
+python3 -m venv .venv
+
+# 2) Activarlo
+source .venv/bin/activate
+
+# 3) Actualizar pip e instalar requirements
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
 
 '''
