@@ -26,3 +26,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+'''
+cd /srv/
+git clone https://github.com/tastudillo-star/pricing-data-services.git
+cd pricing-data-services
+
+
+'''
