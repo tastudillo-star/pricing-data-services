@@ -104,7 +104,8 @@ def run_prices_gregario_etl() -> None:
 
     # Logger JSONL en logs/
     run_id = uuid.uuid4().hex
-    log_path = (base_path / "logs" / "prices_gregario_etl.jsonl").as_posix()
+    # log_path = (base_path / "logs" / "prices_gregario_etl.jsonl").as_posix()
+    log_path = ("logs" / "prices_gregario_etl.jsonl").as_posix()
     logger = build_json_logger(log_path=log_path, logger_name="prices_gregario_etl")
 
     t0 = time.time()
