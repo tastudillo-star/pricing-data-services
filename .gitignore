@@ -3,6 +3,11 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+
+
+pricingdata-483617-beffcf8f55ac.json
+
+
 # C extensions
 *.so
 
