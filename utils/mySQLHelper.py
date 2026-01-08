@@ -8,6 +8,8 @@ from tqdm import tqdm
 import re
 
 import os
+import json
+from datetime import datetime, timezone
 
 HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
 USER = os.getenv("MYSQL_USER", "root")
@@ -321,19 +323,22 @@ class MySQLBulkLoader:
         skipped_total = 0
         skip_events: List[Dict[str, Any]] = []  # histórico para el resumen final
 
-        # --- archivo de log (modo journaling en vivo) ---
+        # --- archivo de log (modo journaling en vivo) ---  (.jsonl)
         try:
             log_file = open(SQLHELPER_LOG_PATH, "w", encoding="utf-8")
         except Exception:
             # Si no podemos abrir para escribir, igual seguimos sin matar la carga.
             log_file = None
 
-        def log_append(line: str) -> None:
-            """Escribe inmediatamente al log en disco para no perder info si el proceso cae."""
+        def _utc_now_iso() -> str:
+            return datetime.now(timezone.utc).isoformat()
+
+        def log_append(event: Dict[str, Any]) -> None:
+            """Escribe inmediatamente al log en disco en formato JSONL."""
             if log_file is None:
                 return
             try:
-                log_file.write(line.rstrip("\n") + "\n")
+                log_file.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
                 log_file.flush()
             except Exception:
                 # Nunca detenemos la carga por un problema de logging.
@@ -371,28 +376,30 @@ class MySQLBulkLoader:
                     refresh=True,
                 )
 
-            # 2. Log inmediato del resumen del batch
-            log_append(
-                f"[SKIP-BATCH] {batch_start}-{batch_end} "
-                f"skipped_in_batch={bad_count} "
-                f"total_skipped_global={skipped_total} "
-                f"example_error={example_err}"
-            )
+            # 2. Log inmediato del resumen del batch (JSONL)
+            log_append({
+                "ts_utc": _utc_now_iso(),
+                "event": "SKIP-BATCH",
+                "table": table_name,
+                "batch_start": batch_start,
+                "batch_end": batch_end,
+                "skipped_in_batch": bad_count,
+                "total_skipped_global": skipped_total,
+                "example_error": example_err,
+            })
 
-            # 3. Log inmediato fila a fila
-            #    Incluimos row_index global y el error exacto.
-            #    No volcamos row_data completo si es gigante, pero podemos dejarlo si usted lo quiere.
-            #    Para ahora: guardamos índice global + error.
+            # 3. Log inmediato fila a fila (JSONL)
             for bad in bad_rows_list:
-                row_idx_global = bad.get("row_index")
-                row_err = bad.get("error")
-                row_data = bad.get("row_data")
-                log_append(
-                    f"[SKIP-ROW] row_index={row_idx_global} "
-                    f"batch_range={batch_start}-{batch_end} "
-                    f"error={row_err} "
-                    f"row_data={row_data}"
-                )
+                log_append({
+                    "ts_utc": _utc_now_iso(),
+                    "event": "SKIP-ROW",
+                    "table": table_name,
+                    "row_index": bad.get("row_index"),
+                    "batch_start": batch_start,
+                    "batch_end": batch_end,
+                    "error": bad.get("error"),
+                    "row_data": bad.get("row_data"),
+                })
 
         stats = None
 
@@ -432,6 +439,30 @@ class MySQLBulkLoader:
                 ui_skip_report=ui_skip_report,
             )
 
+            # ---------- LOG FINAL: SUMMARY (JSONL) ----------
+            try:
+                inserted = stats["inserted"]
+                failed = stats["failed"]
+                total = inserted + failed if (inserted + failed) > 0 else 1
+                success_pct = 100.0 * inserted / total
+
+                log_append({
+                    "ts_utc": _utc_now_iso(),
+                    "event": "SUMMARY",
+                    "table": table_name,
+                    "rows_total_input": total_rows,
+                    "rows_processed": inserted + failed,
+                    "inserted": inserted,
+                    "failed": failed,
+                    "batches_ok": stats["batches_ok"],
+                    "batches_failed": stats["batches_failed"],
+                    "success_pct": success_pct,
+                    "batch_size": batch_size,
+                    "use_unsafe_optimizations": use_unsafe_optimizations,
+                })
+            except Exception:
+                # Nunca fallar la carga por logging
+                pass
         finally:
             # cerrar barra antes del resumen final
             if pbar is not None:
@@ -450,6 +481,11 @@ class MySQLBulkLoader:
                 cnx.close()
             except Exception:
                 pass
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
 
         # =========================
         #   RESUMEN FINAL CONSOLA
@@ -466,6 +502,9 @@ class MySQLBulkLoader:
         print(f"Tasa de éxito                : {success_pct:.4f}%")
         print(f"Batches OK / con error       : {stats['batches_ok']} / {stats['batches_failed']}")
 
+        return stats
+
+
 def my_default_bulk_loader() -> MySQLBulkLoader:
     return MySQLBulkLoader(
         host=HOST,
@@ -473,6 +512,7 @@ def my_default_bulk_loader() -> MySQLBulkLoader:
         password=PASSWORD,
         database=DATABASE,
     )
+
 
 def execute_mysql_query(
     query: str,
@@ -503,7 +543,7 @@ def execute_mysql_query(
 
     Retorna
     -------
-    list[tuple] | None
+    pd.DataFrame | None
         Resultados de la consulta si fetch=True, o None si no corresponde.
     """
     cnx = None
