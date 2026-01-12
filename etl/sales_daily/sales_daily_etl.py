@@ -107,7 +107,8 @@ class SalesDailyETL:
             "Marketplace Category ID": "id_categoria",
             "Order Delivered At Date": "fecha",
             "SUM of Quantity": "cantidad",
-            "Net Revenue": "venta_neta",
+            "Product Sales": "venta_neta",
+            "Net Revenue": "ganancia_neta",
             "Total Discounted Value At Dynamic": "descuento_neto",
             "Last IVA (%)": "iva",
             "Product Front Gross Margin (%)": "front_gm",
@@ -144,7 +145,7 @@ class SalesDailyETL:
         df["back"] = pct_to_ratio(df["back"]).clip(0, 1)
 
         df["venta_neta"] = df["venta_neta"].fillna(0.0)
-        df["ganancia_neta"] = (df["venta_neta"] * df["front_gm"]).fillna(0.0)
+        df["ganancia_neta"] = df["ganancia_neta"].fillna(0.0)
 
         df_sku = df[["sku", "nombre", "id_categoria", "id_proveedor"]].drop_duplicates().copy()
         df_sales = df[["sku", "fecha", "cantidad", "venta_neta", "ganancia_neta", "descuento_neto", "iva", "back"]].copy()
