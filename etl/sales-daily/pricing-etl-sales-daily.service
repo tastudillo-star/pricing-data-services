@@ -6,7 +6,7 @@ After=network.target
 Type=oneshot
 WorkingDirectory=/srv/pricing-data-services
 EnvironmentFile=/srv/pricing-data-services/etl/sales-daily/.env
-ExecStart=/srv/pricing-data-services/.venv/bin/python -m etl.sales_daily.run-sales-daily-etl
+ExecStart=/srv/pricing-data-services/.venv/bin/python -m etl.sales-daily.run-sales-daily-etl
 User=root
 Group=root
 
