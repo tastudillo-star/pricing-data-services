@@ -2,7 +2,7 @@
 Description=Pricing Timer ETL Prices Gregario (daily 0800)
 
 [Timer]
-OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 10:00:00
 Persistent=true
 Unit=pricing-prices-gregario-etl.service
 
