@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Pricing ETL Sales Daily at 08:00 America/Santiago
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=pricing-etl-sales-daily.service
+
+[Install]
+WantedBy=timers.target

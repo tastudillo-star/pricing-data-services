@@ -1,0 +1,16 @@
+[Unit]
+Description=Pricing ETL Prices Gregario
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/pricing-data-services
+EnvironmentFile=/srv/pricing-data-services/etl/prices-gregario/.env
+ExecStart=/srv/pricing-data-services/.venv/bin/python -m etl.prices-gregario.prices-gregario-etl
+User=root
+Group=root
+
+
+StandardOutput=journal
+StandardError=journal

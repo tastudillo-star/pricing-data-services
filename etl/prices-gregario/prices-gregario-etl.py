@@ -23,7 +23,7 @@ from utils.helpers import normalize_dataframe
 # =========================================================
 # Logger JSONL: 1 línea = 1 evento JSON (fácil para Streamlit)
 # =========================================================
-def build_json_logger(log_path: str, logger_name: str = "prices_gregario_etl") -> logging.Logger:
+def build_json_logger(log_path: str, logger_name: str = "prices-gregario-etl") -> logging.Logger:
     """
     Loggea eventos como JSON por línea (JSONL):
       {"ts": "...", "level": "INFO", "event": "...", ...}
@@ -111,7 +111,7 @@ def run_prices_gregario_etl() -> None:
     logger = build_json_logger(log_path=log_path, logger_name="prices_gregario_etl")
 
     t0 = time.time()
-    log_event(logger, "info", "etl_start", run_id=run_id, etl="prices_gregario")
+    log_event(logger, "info", "etl_start", run_id=run_id, etl="prices-gregario")
 
     try:
         # Imports diferidos: aseguran que mySQLHelper vea las env vars ya cargadas

@@ -12,12 +12,14 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from utils.mySQLHelper import my_default_bulk_loader, execute_mysql_query
+from dotenv import load_dotenv
+load_dotenv()  # carga .env en os.environ
 
 
 # =========================================================
 # Logger de archivo: 1 línea = 1 evento JSON (fácil para Streamlit)
 # =========================================================
-def build_json_logger(log_path: str, logger_name: str = "sales_daily_etl") -> logging.Logger:
+def build_json_logger(log_path: str, logger_name: str = "sales-daily-etl") -> logging.Logger:
     """
     Loggea eventos como JSON por línea (JSONL):
       {"ts": "...", "level": "INFO", "event": "...", ...}
@@ -284,3 +286,50 @@ class SalesDailyETL:
                 traceback=tb
             )
             return {"status": "error", "run_id": self.run_id, "error": str(e)}
+
+
+def main():
+    env_path = ".env"  # scripts/ -> raíz
+    load_dotenv(dotenv_path=env_path, override=False)
+    spreadsheet_id = os.getenv("GS_SPREADSHEET_ID", "1JGEcYm_bBekbpluORXKwCgTw5LBhgN6xWHL8WPJnXf0")
+    range_name     = os.getenv("GS_RANGE", "Base Pricing!A:P")
+    sa_json_path   = os.getenv("GS_SA_JSON_PATH", "pricingdata-483617-beffcf8f55ac.json")
+
+    # Importante: ruta ABSOLUTA en el VPS (recomendado)
+    log_path       = os.getenv("ETL_LOG_PATH", "logs/sales_daily_etl.jsonl")
+
+    etl = SalesDailyETL(
+        spreadsheet_id=spreadsheet_id,
+        range_name=range_name,
+        sa_json_path=sa_json_path,
+        log_path=log_path
+    )
+    print(etl.run())
+
+if __name__ == "__main__":
+    main()
+
+
+'''
+cd /srv/
+git clone https://github.com/tastudillo-star/pricing-data-services.git
+cd pricing-data-services
+
+cd /srv/pricing-data-services
+git pull
+
+cd /srv/pricing-data-services
+
+# 1) Crear venv
+python3 -m venv .venv
+
+# 2) Activarlo
+source .venv/bin/activate
+
+# 3) Actualizar pip e instalar requirements
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+deactivate
+
+'''
