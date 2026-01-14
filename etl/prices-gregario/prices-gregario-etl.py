@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from google.oauth2 import service_account
 from pandas_gbq import read_gbq
 from logging.handlers import RotatingFileHandler
-from utils.helpers import normalize_dataframe
+from utils.competidor_schemas import normalize_dataframe
 
 
 # =========================================================
