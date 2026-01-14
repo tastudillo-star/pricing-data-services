@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional, Callable, Tuple, Union
+from pathlib import Path
+from typing import Any, Dict, Optional, Callable, Tuple, Union, Iterable
 
 import pandas as pd
 
 
-import pandas as pd
-from typing import Iterable, Optional, Union
-
-
 # ======================================================================================
-# Helpers
+# Helpers (IDs canónicos)
 # ======================================================================================
-def canon_id(x) -> str:
-    if x is None or (isinstance(x, float) and pd.isna(x)):
+def canon_id(x: Any) -> str:
+    """
+    Canoniza IDs para comparar/matchear de forma estable:
+      - strip
+      - elimina sufijo .0 típico de floats serializados
+    """
+    if x is None:
+        return ""
+    if isinstance(x, float) and pd.isna(x):
         return ""
     s = str(x).strip()
-    # típico cuando viene float pero representa entero
     if s.endswith(".0"):
         s = s[:-2]
     return s
@@ -35,20 +38,20 @@ def load_sku_value_map_from_csv(
     Lee mapping_out.csv y retorna un dict listo para usar en value_maps["sku"].
 
     Resultado:
-      { "<competidor_id>": <sku_chiper> }
+      { "<competidor_id>": "<sku_chiper>" }
 
-    statuses:
-      - ("AUTO",) por defecto
-      - puede ser str: "AUTO"
-      - puede ser iterable: ("AUTO", "MANUAL_OK", "REVIEW_OK")
-      - puede ser None: no filtra por status
+    Importante:
+      - Todo se maneja como STRING canónico (NO int) para evitar:
+        ceros a la izquierda, .0, espacios, etc.
     """
-    df = pd.read_csv(mapping_csv_path, dtype=str)  # fuerza strings
+    df = pd.read_csv(mapping_csv_path, dtype=str)
 
     required = {comp_id_col, chiper_id_col}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"mapping_csv no tiene columnas {sorted(missing)}. Tiene: {list(df.columns)}")
+        raise ValueError(
+            f"mapping_csv no tiene columnas {sorted(missing)}. Tiene: {list(df.columns)}"
+        )
 
     # Filtrado por status (si existe la columna y statuses no es None)
     if statuses is not None and status_col in df.columns:
@@ -58,22 +61,18 @@ def load_sku_value_map_from_csv(
             statuses_set = set(statuses)
         df = df[df[status_col].isin(statuses_set)].copy()
 
+    # Limpieza base
     df = df.dropna(subset=[comp_id_col, chiper_id_col]).copy()
 
-    # keys string
+    # Canonización (keys + values)
     df[comp_id_col] = df[comp_id_col].map(canon_id)
-
-    # valores int (para Int64)
-    def _to_int_or_none(x):
-        try:
-            v = int(str(x))
-            return v if v > 0 else None
-        except Exception:
-            return None
-
     df[chiper_id_col] = df[chiper_id_col].map(canon_id)
-    df = df[(df[comp_id_col] != "") & (df[chiper_id_col] != "")]
-    df = df.drop_duplicates(subset=[comp_id_col], keep="first")
+
+    # Filtra vacíos
+    df = df[(df[comp_id_col] != "") & (df[chiper_id_col] != "")].copy()
+
+    # Un key por comp_id (primera ocurrencia)
+    df = df.drop_duplicates(subset=[comp_id_col], keep="first").copy()
 
     return dict(zip(df[comp_id_col].tolist(), df[chiper_id_col].tolist()))
 
@@ -81,7 +80,6 @@ def load_sku_value_map_from_csv(
 # ======================================================================================
 # Schemas SOLO para competidores + normalización especializada (sin I/O)
 # ======================================================================================
-
 ValueMap = Union[Dict[Any, Any], Callable[[Any], Any]]
 
 
@@ -96,6 +94,9 @@ class BaseSchema:
         self.df_schema: pd.DataFrame = pd.DataFrame()
         self.map_dict: Dict[str, str] = {}
         self.value_maps: Dict[str, ValueMap] = {}
+
+        # Opcional: columnas que quieres canonizar como IDs (por defecto sku)
+        self.canon_cols: set[str] = {"sku"}
 
     def to_json_list(self, df: pd.DataFrame):
         json_str = df.to_json(orient="records", date_format="iso")
@@ -126,16 +127,12 @@ class BaseSchema:
 # ======================================================================================
 # Normalización especializada para esta aplicación (competidores)
 # ======================================================================================
-
 def _normalize_text_series(s: pd.Series) -> pd.Series:
     """
-    Normalización de texto ligera y rápida (vectorizada):
+    Normalización de texto ligera (vectorizada):
       - strip
       - colapsa espacios múltiples
-    NO fuerza upper/lower para no romper nombres de marca/categoría si no quieres.
-    Si quieres, puedes cambiar a .str.lower() o .str.upper() aquí.
     """
-    # Asegura string, preserva NaN
     s2 = s.astype("string")
     s2 = s2.str.strip()
     s2 = s2.str.replace(r"\s+", " ", regex=True)
@@ -150,26 +147,27 @@ def normalize_dataframe(
     drop_duplicates: bool = False,
 ) -> Tuple[pd.DataFrame, Optional[list[Dict[str, Any]]]]:
     """
-    Normaliza un DataFrame en memoria según un Schema de competidor.
-    Especializada para este caso:
-      - Selecciona solo columnas mapeadas y existentes
-      - Renombra a columnas destino
-      - Aplica value_maps (si existe)
-      - Castea según df_schema (solo columnas presentes)
-      - Normaliza strings (vectorizado)
-      - Limpieza opcional (drop_na / drop_duplicates)
+    Normaliza un DataFrame en memoria según un Schema de competidor (especializada).
+
+    Pipeline:
+      1) select + rename según map_dict
+      2) asegurar columnas esperadas
+      3) canonizar IDs (sku por defecto) ANTES del value_maps (para que matcheen las keys)
+      4) apply_value_maps
+      5) canonizar IDs de nuevo (por si el mapping trae .0 / espacios)
+      6) cast tipos (suave)
+      7) normalización texto (no toca sku)
+      8) limpieza opcional
     """
+    # DataFrame vacío con columnas/dtypes del schema
     if df is None or df.empty:
-        # DataFrame vacío con columnas/dtypes del schema
         out = pd.DataFrame({c: pd.Series(dtype=t) for c, t in schema.df_schema.dtypes.items()})
         return out, None
 
-    # Columnas destino esperadas y dtypes esperados
     expected_cols = list(schema.df_schema.columns)
     dtype_map = schema.df_schema.dtypes.to_dict()
 
-    # 1) Selección y rename (solo columnas que existan en input)
-    # map_dict: {dest: source}
+    # 1) Select + rename (solo columnas presentes)
     present_pairs = [(dest, src) for dest, src in schema.map_dict.items() if src in df.columns]
     if not present_pairs:
         out = pd.DataFrame({c: pd.Series(dtype=dtype_map.get(c, "object")) for c in expected_cols})
@@ -177,60 +175,59 @@ def normalize_dataframe(
 
     src_cols = [src for _, src in present_pairs]
     rename_map = {src: dest for dest, src in present_pairs}
-
     data = df.loc[:, src_cols].rename(columns=rename_map).copy()
 
-    # 2) Asegurar TODAS las columnas esperadas (aunque falten)
-    # (evita KeyError luego y mantiene forma consistente)
+    # 2) Asegurar columnas esperadas (forma estable)
     for c in expected_cols:
         if c not in data.columns:
             data[c] = pd.NA
-
     data = data[expected_cols]
 
-    # 3) Value maps (recodificación por columna destino)
+    # 3) Canoniza IDs antes del value map (clave para que replace() haga match)
+    for c in getattr(schema, "canon_cols", set()):
+        if c in data.columns:
+            data[c] = data[c].map(canon_id)
+
+    # 4) Value maps
     data = schema.apply_value_maps(data)
 
-    # 4) Cast de tipos (solo donde aplique; errors ignore para robustez)
-    # Nota: mantener esto "suave" es útil cuando BigQuery trae floats/strings mezclados.
+    # 5) Canoniza IDs después del value map (evita que quede "123.0" o con espacios)
+    for c in getattr(schema, "canon_cols", set()):
+        if c in data.columns:
+            data[c] = data[c].map(canon_id)
+
+    # 6) Cast suave
     data = data.astype(dtype_map, errors="ignore")
 
-    # 5) Normalización de strings (solo object/string)
-    # Evita tocar columnas clave si no quieres (ej. sku) => puedes excluirlas aquí.
+    # 7) Normalización texto (no toca sku)
     if normalice:
         for col in data.columns:
-            if col not in data.columns:
+            if col in getattr(schema, "canon_cols", set()):
                 continue
-            # Normaliza solo si parece texto
             if pd.api.types.is_object_dtype(data[col]) or pd.api.types.is_string_dtype(data[col]):
-                # Excluir claves típicas si prefieres 0 intervención
-                if col in {"sku"}:
-                    continue
                 data[col] = _normalize_text_series(data[col])
 
-    # 6) Limpieza opcional
+    # 8) Limpieza
     if drop_na:
         data = data.dropna()
-
     if drop_duplicates:
         data = data.drop_duplicates()
 
-    data = data.reset_index(drop=True)
-    return data, None
+    return data.reset_index(drop=True), None
 
 
 # ======================================================================================
 # Schemas competidores
 # ======================================================================================
-
 class GenericCompetidorSchema(BaseSchema):
     """
-    Fallback si un competidor nuevo no tiene schema dedicado.
+    Fallback si un competidor no tiene schema dedicado.
     """
     def __init__(self) -> None:
         super().__init__()
+        # sku como texto (robusto para EAN con ceros a la izquierda / ids tipo string)
         self.df_schema = pd.DataFrame({
-            "sku": pd.Series(dtype="Int64"),
+            "sku": pd.Series(dtype="object"),
             "fecha": pd.Series(dtype="datetime64[ns]"),
             "precio_lleno": pd.Series(dtype="float64"),
             "precio_descuento": pd.Series(dtype="float64"),
@@ -247,17 +244,12 @@ class GenericCompetidorSchema(BaseSchema):
 class CentralMayoristaSchema(GenericCompetidorSchema):
     def __init__(self) -> None:
         super().__init__()
-        # Si Central usa exactamente estas columnas, no necesitas cambiar nada.
         self.map_dict = {
             "sku": "product_ean",
             "fecha": "extraction_date",
             "precio_lleno": "product_price",
             "precio_descuento": "product_discount_price",
         }
-        # Ejemplo de recodificación (opcional):
-        # self.value_maps = {
-        #     "categoria": {"BEBIDAS_GASEOSAS": "BEBIDAS GASEOSAS"}
-        # }
 
 
 class AlviSchema(GenericCompetidorSchema):
@@ -269,7 +261,6 @@ class AlviSchema(GenericCompetidorSchema):
             "precio_lleno": "product_price",
             "precio_descuento": "product_min_price",
         }
-        self.value_maps = {}
 
 
 class AdelcoSchema(GenericCompetidorSchema):
@@ -281,18 +272,23 @@ class AdelcoSchema(GenericCompetidorSchema):
             "precio_lleno": "product_price",
             "precio_descuento": "product_discount_price",
         }
-        self.value_maps = {}
 
 
 class LaOfertaSchema(GenericCompetidorSchema):
     def __init__(self) -> None:
         super().__init__()
         self.map_dict = {
-            "sku": "product_sku",
+            "sku": "product_sku",          # ID competidor (no necesariamente EAN)
             "fecha": "extraction_date",
             "precio_lleno": "product_price",
-            #"precio_descuento": "product_discount_price",
+            # "precio_descuento": "product_discount_price",
         }
-        self.value_maps = {}
-        sku_map = load_sku_value_map_from_csv("./utils/mapping_out.csv", statuses=("AUTO", "REVIEW"))
-        self.value_maps["sku"] = sku_map
+
+        # Path robusto: relativo a utils/
+        mapping_path = "./utils/mapping_out.csv"
+
+        sku_map = load_sku_value_map_from_csv(
+            mapping_path,
+            statuses=("AUTO", "REVIEW"),
+        )
+        self.value_maps = {"sku": sku_map}
