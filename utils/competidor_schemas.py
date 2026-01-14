@@ -6,6 +6,70 @@ from typing import Any, Dict, Optional, Callable, Tuple, Union
 import pandas as pd
 
 
+import pandas as pd
+from typing import Iterable, Optional, Union
+
+
+# ======================================================================================
+# Helpers
+# ======================================================================================
+
+def load_sku_value_map_from_csv(
+    mapping_csv_path: str,
+    *,
+    comp_id_col: str = "comp_id",
+    chiper_id_col: str = "best_chiper_id",
+    status_col: str = "status",
+    statuses: Optional[Union[str, Iterable[str]]] = ("AUTO",),
+) -> dict:
+    """
+    Lee mapping_out.csv y retorna un dict listo para usar en value_maps["sku"].
+
+    Resultado:
+      { "<competidor_id>": <sku_chiper> }
+
+    statuses:
+      - ("AUTO",) por defecto
+      - puede ser str: "AUTO"
+      - puede ser iterable: ("AUTO", "MANUAL_OK", "REVIEW_OK")
+      - puede ser None: no filtra por status
+    """
+    df = pd.read_csv(mapping_csv_path)
+
+    required = {comp_id_col, chiper_id_col}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"mapping_csv no tiene columnas {sorted(missing)}. Tiene: {list(df.columns)}")
+
+    # Filtrado por status (si existe la columna y statuses no es None)
+    if statuses is not None and status_col in df.columns:
+        if isinstance(statuses, str):
+            statuses_set = {statuses}
+        else:
+            statuses_set = set(statuses)
+        df = df[df[status_col].isin(statuses_set)].copy()
+
+    df = df.dropna(subset=[comp_id_col, chiper_id_col]).copy()
+
+    # keys string
+    df[comp_id_col] = df[comp_id_col].astype(str)
+
+    # valores int (para Int64)
+    def _to_int_or_none(x):
+        try:
+            v = int(str(x))
+            return v if v > 0 else None
+        except Exception:
+            return None
+
+    df[chiper_id_col] = df[chiper_id_col].map(_to_int_or_none)
+    df = df.dropna(subset=[chiper_id_col]).copy()
+
+    df = df.drop_duplicates(subset=[comp_id_col], keep="first")
+
+    return dict(zip(df[comp_id_col].tolist(), df[chiper_id_col].tolist()))
+
+
 # ======================================================================================
 # Schemas SOLO para competidores + normalización especializada (sin I/O)
 # ======================================================================================
@@ -219,6 +283,8 @@ class LaOfertaSchema(GenericCompetidorSchema):
             "sku": "product_ean",
             "fecha": "extraction_date",
             "precio_lleno": "product_price",
-            "precio_descuento": "product_discount_price",
+            #"precio_descuento": "product_discount_price",
         }
         self.value_maps = {}
+        sku_map = load_sku_value_map_from_csv("mapping_out.csv", statuses=None)
+        self.value_maps["sku"] = sku_map
