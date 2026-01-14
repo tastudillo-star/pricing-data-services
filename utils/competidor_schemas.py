@@ -286,5 +286,5 @@ class LaOfertaSchema(GenericCompetidorSchema):
             #"precio_descuento": "product_discount_price",
         }
         self.value_maps = {}
-        sku_map = load_sku_value_map_from_csv("./utils/mapping_out.csv", statuses=None)
+        sku_map = load_sku_value_map_from_csv("./utils/mapping_out.csv", statuses=("AUTO", "REVIEW"))
         self.value_maps["sku"] = sku_map
