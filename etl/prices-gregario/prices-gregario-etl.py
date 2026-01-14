@@ -88,7 +88,7 @@ def _table_map() -> Dict[str, str]:
         # "adelco": _env("BQ_ADELCO"),
         "alvi": _env("BQ_ALVI"),
         "central_mayorista": _env("BQ_CENTRAL_MAYORISTA"),
-        # "la_oferta": _env("BQ_LA_OFERTA"),
+        "la_oferta": _env("BQ_LA_OFERTA"),
     }
 
 
