@@ -280,7 +280,7 @@ class LaOfertaSchema(GenericCompetidorSchema):
     def __init__(self) -> None:
         super().__init__()
         self.map_dict = {
-            "sku": "product_ean",
+            "sku": "product_sku",
             "fecha": "extraction_date",
             "precio_lleno": "product_price",
             #"precio_descuento": "product_discount_price",
