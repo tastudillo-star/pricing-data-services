@@ -52,7 +52,6 @@ def build_json_logger(log_path: str, logger_name: str = "prices-gregario-etl") -
 
 def log_event(logger: logging.Logger, level: str, event: str, **kwargs) -> None:
     payload = {
-        # UTC aware (evita warning)
         "ts": datetime.now(dt.UTC).isoformat(timespec="seconds"),
         "level": level.upper(),
         "event": event,
@@ -87,10 +86,32 @@ def _table_map() -> Dict[str, str]:
     return {
         # activa/desactiva competidores aquí si quieres
         # "adelco": _env("BQ_ADELCO"),
-        # "alvi": _env("BQ_ALVI"),
+        "alvi": _env("BQ_ALVI"),
         "central_mayorista": _env("BQ_CENTRAL_MAYORISTA"),
         # "la_oferta": _env("BQ_LA_OFERTA"),
     }
+
+
+def _schema_for_competidor(competidor: str):
+    """
+    Devuelve instancia de schema (BaseSchema) según competidor.
+    No requiere nuevas variables .env.
+    """
+    from utils.competidor_schemas import (
+        GenericCompetidorSchema,
+        CentralMayoristaSchema,
+        AlviSchema,
+        AdelcoSchema,
+        LaOfertaSchema,
+    )
+
+    m = {
+        "central_mayorista": CentralMayoristaSchema,
+        "alvi": AlviSchema,
+        "adelco": AdelcoSchema,
+        "la_oferta": LaOfertaSchema,
+    }
+    return m.get(competidor, GenericCompetidorSchema)()
 
 
 # ======================================================
@@ -104,7 +125,6 @@ def run_prices_gregario_etl() -> None:
 
     # Logger JSONL en logs/
     run_id = uuid.uuid4().hex
-    # log_path = (base_path / "logs" / "prices_gregario_etl.jsonl").as_posix()
     repo_root = Path(__file__).resolve().parents[2]  # .../pricing-data-services
     log_path = (repo_root / "logs" / "prices_gregario_etl.jsonl").as_posix()
 
@@ -117,7 +137,6 @@ def run_prices_gregario_etl() -> None:
         # Imports diferidos: aseguran que mySQLHelper vea las env vars ya cargadas
         from utils.helpers import load_and_normalice
         from utils.mySQLHelper import execute_mysql_query, my_default_bulk_loader
-        from utils.schemas import CompetidorSchema
 
         project_id = _env("GCP_PROJECT_ID")
         cred_path = base_path / _env("GCP_CREDENTIALS_JSON")
@@ -175,8 +194,6 @@ def run_prices_gregario_etl() -> None:
                 bq_table=table,
             )
 
-            print(fecha_objetivo)
-
             query = f"""
             SELECT *
             FROM `{table}`
@@ -211,12 +228,14 @@ def run_prices_gregario_etl() -> None:
                 elapsed_s=round(time.time() - step_t0, 3),
             )
 
-            # Normalización
-
+            # ======================================================
+            # Normalización (schema por competidor)
+            # ======================================================
+            schema = _schema_for_competidor(competidor)
 
             df_norm, _ = normalize_dataframe(
                 df_bq,
-                CompetidorSchema(),
+                schema,
                 drop_duplicates=False,
                 drop_na=False,
             )

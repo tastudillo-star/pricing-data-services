@@ -4,7 +4,7 @@ import unicodedata
 import re
 import pandas as pd
 from pathlib import Path
-from utils.schemas import BaseSchema
+from utils.competidor_schemas import BaseSchema
 from typing import Any, Dict, Optional
 
 ## Helper para normalizar data
