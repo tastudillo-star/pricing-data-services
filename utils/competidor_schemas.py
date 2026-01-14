@@ -13,6 +13,15 @@ from typing import Iterable, Optional, Union
 # ======================================================================================
 # Helpers
 # ======================================================================================
+def canon_id(x) -> str:
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return ""
+    s = str(x).strip()
+    # típico cuando viene float pero representa entero
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
 
 def load_sku_value_map_from_csv(
     mapping_csv_path: str,
@@ -34,7 +43,7 @@ def load_sku_value_map_from_csv(
       - puede ser iterable: ("AUTO", "MANUAL_OK", "REVIEW_OK")
       - puede ser None: no filtra por status
     """
-    df = pd.read_csv(mapping_csv_path)
+    df = pd.read_csv(mapping_csv_path, dtype=str)  # fuerza strings
 
     required = {comp_id_col, chiper_id_col}
     missing = required - set(df.columns)
@@ -52,7 +61,7 @@ def load_sku_value_map_from_csv(
     df = df.dropna(subset=[comp_id_col, chiper_id_col]).copy()
 
     # keys string
-    df[comp_id_col] = df[comp_id_col].astype(str)
+    df[comp_id_col] = df[comp_id_col].map(canon_id)
 
     # valores int (para Int64)
     def _to_int_or_none(x):
@@ -62,9 +71,8 @@ def load_sku_value_map_from_csv(
         except Exception:
             return None
 
-    df[chiper_id_col] = df[chiper_id_col].map(_to_int_or_none)
-    df = df.dropna(subset=[chiper_id_col]).copy()
-
+    df[chiper_id_col] = df[chiper_id_col].map(canon_id)
+    df = df[(df[comp_id_col] != "") & (df[chiper_id_col] != "")]
     df = df.drop_duplicates(subset=[comp_id_col], keep="first")
 
     return dict(zip(df[comp_id_col].tolist(), df[chiper_id_col].tolist()))
