@@ -99,9 +99,10 @@ class SalesDailyETL:
         return pd.DataFrame(rows, columns=headers).dropna(how="all")
 
     # -------------------------
-    # 2) Transform (solo último día)
+    # 2) Transform - Limpia y normaliza datos
     # -------------------------
-    def transform_latest_day(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Renombra columnas, convierte tipos y normaliza porcentajes."""
         rename = {
             "SKU": "sku",
             "Name SKU": "nombre",
@@ -131,12 +132,6 @@ class SalesDailyETL:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
         df = df.dropna(subset=["sku", "id_proveedor", "id_categoria", "fecha"])
-        if df.empty:
-            return pd.DataFrame(), pd.DataFrame(), ""
-
-        latest = max(df["fecha"])
-        df = df[df["fecha"] == latest].copy()
-        fecha_str = str(latest)
 
         def pct_to_ratio(s: pd.Series) -> pd.Series:
             s = s.fillna(0.0)
@@ -148,6 +143,85 @@ class SalesDailyETL:
 
         df["venta_neta"] = df["venta_neta"].fillna(0.0)
         df["ganancia_neta"] = df["ganancia_neta"].fillna(0.0)
+
+        return df
+
+    def _get_missing_records(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Consulta la DB y retorna solo los registros del Sheet cuyo par (fecha, sku) NO está importado.
+        Retorna un DataFrame filtrado con los registros faltantes.
+        """
+        if df.empty:
+            return pd.DataFrame()
+
+        # Crear columna de fecha como string para comparar
+        df = df.copy()
+        df["fecha_str"] = df["fecha"].astype(str)
+
+        # Obtener pares únicos (fecha, sku) del sheet
+        sheet_pairs = df[["fecha_str", "sku"]].drop_duplicates()
+
+        # Consultar pares ya existentes en la DB (join con sku para obtener el sku original)
+        query = """
+            SELECT v.fecha, s.sku
+            FROM ventas_chiper v
+            INNER JOIN sku s ON v.id_sku = s.id;
+        """
+        df_existing = execute_mysql_query(query)
+
+        if df_existing is None or df_existing.empty:
+            # No hay datos en la DB, todo es faltante
+            return df
+
+        # Convertir a set de tuplas para comparación eficiente O(1)
+        df_existing["fecha_str"] = df_existing["fecha"].astype(str)
+        existing_pairs = set(zip(df_existing["fecha_str"], df_existing["sku"]))
+
+        # Filtrar solo los registros faltantes
+        df["_pair"] = list(zip(df["fecha_str"], df["sku"]))
+        df_missing = df[~df["_pair"].isin(existing_pairs)].copy()
+        df_missing = df_missing.drop(columns=["_pair", "fecha_str"])
+
+        return df_missing
+
+    def transform_missing_days(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int, list]:
+        """
+        Transforma solo los registros (fecha, sku) del Sheet que NO están en la DB.
+        Retorna: (df_sku, df_sales, cantidad_de_registros_faltantes, lista_fechas_unicas)
+        """
+        df = self._clean_dataframe(df)
+        if df.empty:
+            return pd.DataFrame(), pd.DataFrame(), 0, []
+
+        df_missing = self._get_missing_records(df)
+        if df_missing.empty:
+            return pd.DataFrame(), pd.DataFrame(), 0, []
+
+        missing_count = len(df_missing)
+
+        df_sku = df_missing[["sku", "nombre", "id_categoria", "id_proveedor"]].drop_duplicates().copy()
+        df_sales = df_missing[["sku", "fecha", "cantidad", "venta_neta", "ganancia_neta", "descuento_neto", "iva", "back"]].copy()
+
+        df_sku["sku"] = df_sku["sku"].astype(int)
+        df_sales["sku"] = df_sales["sku"].astype(int)
+        df_sales["cantidad"] = df_sales["cantidad"].fillna(0).astype(int)
+        df_sales["fecha"] = df_sales["fecha"].astype(str)
+
+        # Obtener fechas únicas para logging
+        unique_dates = sorted(df_sales["fecha"].unique().tolist())
+
+        return df_sku, df_sales, missing_count, unique_dates
+
+    # DEPRECATED: Mantener por compatibilidad, pero usar transform_missing_days
+    def transform_latest_day(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+        """Solo procesa el último día (método legacy)."""
+        df = self._clean_dataframe(df)
+        if df.empty:
+            return pd.DataFrame(), pd.DataFrame(), ""
+
+        latest = max(df["fecha"])
+        df = df[df["fecha"] == latest].copy()
+        fecha_str = str(latest)
 
         df_sku = df[["sku", "nombre", "id_categoria", "id_proveedor"]].drop_duplicates().copy()
         df_sales = df[["sku", "fecha", "cantidad", "venta_neta", "ganancia_neta", "descuento_neto", "iva", "back"]].copy()
@@ -216,6 +290,35 @@ class SalesDailyETL:
         return deleted_approx, inserted
 
     # -------------------------
+    # 4b) Load ventas de múltiples días faltantes (sin DELETE, solo INSERT)
+    # -------------------------
+    def load_sales_missing(self, df_sales: pd.DataFrame, batch_size: int = 2000) -> int:
+        """
+        Inserta ventas de múltiples fechas que ya sabemos NO existen en la DB.
+        No hace DELETE porque se asume que estas fechas no están.
+        """
+        if df_sales.empty:
+            return 0
+
+        df_dicc = execute_mysql_query("SELECT id, sku FROM sku;")
+        if df_dicc is None or df_dicc.empty:
+            raise RuntimeError("No se pudo obtener SELECT id, sku FROM sku;")
+
+        df_sales = df_sales.merge(df_dicc, on="sku", how="left")
+        df_sales.rename(columns={"id": "id_sku"}, inplace=True)
+        df_sales = df_sales.dropna(subset=["id_sku"]).copy()
+        df_sales["id_sku"] = df_sales["id_sku"].astype(int)
+
+        df_carga = df_sales[["id_sku", "fecha", "cantidad", "venta_neta", "ganancia_neta", "descuento_neto", "iva", "back"]].copy()
+
+        self.loader.bulk_insert_df(
+            table_name="ventas_chiper",
+            df=df_carga,
+            batch_size=batch_size
+        )
+        return int(len(df_carga))
+
+    # -------------------------
     # Run end-to-end
     # -------------------------
     def run(self) -> dict:
@@ -235,28 +338,28 @@ class SalesDailyETL:
                 log_event(self.logger, "WARNING", "empty_sheet", run_id=self.run_id, elapsed_s=round(time.time() - t0, 2))
                 return {"status": "empty_sheet", "run_id": self.run_id}
 
-            df_sku, df_sales, target_date = self.transform_latest_day(df_raw)
+            df_sku, df_sales, missing_count, unique_dates = self.transform_missing_days(df_raw)
             log_event(
                 self.logger, "INFO", "transform_done",
                 run_id=self.run_id,
-                target_date=target_date,
+                missing_records_count=missing_count,
+                unique_dates=unique_dates,
                 sku_rows=int(len(df_sku)),
                 sales_rows=int(len(df_sales))
             )
 
-            if not target_date:
-                log_event(self.logger, "WARNING", "no_valid_dates", run_id=self.run_id, elapsed_s=round(time.time() - t0, 2))
-                return {"status": "no_valid_dates", "run_id": self.run_id}
+            if missing_count == 0:
+                log_event(self.logger, "INFO", "all_records_imported", run_id=self.run_id, elapsed_s=round(time.time() - t0, 2))
+                return {"status": "all_records_imported", "run_id": self.run_id, "message": "No hay registros (fecha, sku) nuevos para importar"}
 
             sku_new = self.load_skus_missing(df_sku, batch_size=250)
             log_event(self.logger, "INFO", "load_sku_done", run_id=self.run_id, sku_new_inserted=int(sku_new))
 
-            deleted, inserted = self.load_sales_day(df_sales, target_date, batch_size=2000, idempotent=True)
+            inserted = self.load_sales_missing(df_sales, batch_size=2000)
             log_event(
                 self.logger, "INFO", "load_sales_done",
                 run_id=self.run_id,
-                target_date=target_date,
-                sales_deleted_approx=int(deleted),
+                unique_dates=unique_dates,
                 sales_inserted=int(inserted)
             )
 
@@ -264,15 +367,16 @@ class SalesDailyETL:
             log_event(
                 self.logger, "INFO", "etl_finish_ok",
                 run_id=self.run_id,
-                target_date=target_date,
+                missing_records_count=missing_count,
+                unique_dates=unique_dates,
                 elapsed_s=elapsed
             )
             return {
                 "status": "ok",
                 "run_id": self.run_id,
-                "target_date": target_date,
+                "missing_records_count": missing_count,
+                "unique_dates": unique_dates,
                 "sku_new_inserted": sku_new,
-                "sales_deleted_approx": deleted,
                 "sales_inserted": inserted,
                 "elapsed_s": elapsed
             }
